@@ -1,0 +1,616 @@
+app:
+  description: |
+    PDF → JSON extractor.
+    Input: 1 PDF (text + tables).
+    Output: structured JSON gồm document metadata, narrative blocks, và tables — mỗi table row có thêm row_text + nl_summary sẵn sàng ingest vào Dify KB cho RAG.
+    Vision LLM: GPT-5-mini (strict JSON schema, reasoning_effort=medium).
+  icon: 📄
+  icon_background: '#E0F2FE'
+  mode: workflow
+  name: pdf-to-json-extractor
+  use_icon_as_answer_icon: false
+dependencies: []
+kind: app
+version: 0.3.1
+workflow:
+  conversation_variables: []
+  environment_variables: []
+  features:
+    file_upload:
+      allowed_file_extensions:
+      - .pdf
+      allowed_file_types:
+      - document
+      allowed_file_upload_methods:
+      - local_file
+      enabled: true
+      fileUploadConfig:
+        audio_file_size_limit: 50
+        batch_count_limit: 1
+        file_size_limit: 30
+        image_file_size_limit: 10
+        video_file_size_limit: 100
+        workflow_file_upload_limit: 1
+      number_limits: 1
+    opening_statement: ''
+    retriever_resource:
+      enabled: false
+    sensitive_word_avoidance:
+      enabled: false
+    speech_to_text:
+      enabled: false
+    suggested_questions: []
+    suggested_questions_after_answer:
+      enabled: false
+    text_to_speech:
+      enabled: false
+  graph:
+    edges:
+    - data:
+        isInIteration: false
+        isInLoop: false
+        sourceType: start
+        targetType: document-extractor
+      id: start-de_pdf
+      source: 'start_1'
+      sourceHandle: source
+      target: 'de_pdf'
+      targetHandle: target
+      type: custom
+      zIndex: 0
+    - data:
+        isInIteration: false
+        isInLoop: false
+        sourceType: document-extractor
+        targetType: llm
+      id: de_pdf-llm_extract
+      source: 'de_pdf'
+      sourceHandle: source
+      target: 'llm_extract'
+      targetHandle: target
+      type: custom
+      zIndex: 0
+    - data:
+        isInIteration: false
+        isInLoop: false
+        sourceType: llm
+        targetType: code
+      id: llm_extract-code_postprocess
+      source: 'llm_extract'
+      sourceHandle: source
+      target: 'code_postprocess'
+      targetHandle: target
+      type: custom
+      zIndex: 0
+    - data:
+        isInIteration: false
+        isInLoop: false
+        sourceType: code
+        targetType: end
+      id: code_postprocess-end
+      source: 'code_postprocess'
+      sourceHandle: source
+      target: 'end_1'
+      targetHandle: target
+      type: custom
+      zIndex: 0
+    nodes:
+    # ────────────────────────────────────────────────────────────────────
+    # Start — single PDF upload
+    # ────────────────────────────────────────────────────────────────────
+    - data:
+        desc: |
+          Upload 1 file PDF (text + bảng).
+          Workflow sẽ extract toàn bộ nội dung thành JSON, mỗi row trong bảng có row_text sẵn sàng ingest vào KB.
+        selected: false
+        title: Start (upload PDF)
+        type: start
+        variables:
+        - label: pdf_file (PDF cần extract)
+          variable: pdf_file
+          type: file
+          required: true
+          allowed_file_types:
+          - document
+          allowed_file_extensions:
+          - .pdf
+          allowed_file_upload_methods:
+          - local_file
+          max_length: 48
+      height: 140
+      id: 'start_1'
+      position:
+        x: 30
+        y: 250
+      positionAbsolute:
+        x: 30
+        y: 250
+      selected: false
+      sourcePosition: right
+      targetPosition: left
+      type: custom
+      width: 300
+
+    # ────────────────────────────────────────────────────────────────────
+    # Document Extractor — plain text fallback
+    # ────────────────────────────────────────────────────────────────────
+    - data:
+        desc: |
+          Extract raw text từ PDF (text-only, không hiểu layout).
+          Dùng làm reference cross-check cho LLM Vision phía sau.
+        selected: false
+        title: Doc Extractor (raw text reference)
+        type: document-extractor
+        is_array_file: false
+        variable_selector:
+        - 'start_1'
+        - pdf_file
+      height: 90
+      id: 'de_pdf'
+      position:
+        x: 380
+        y: 250
+      positionAbsolute:
+        x: 380
+        y: 250
+      selected: false
+      sourcePosition: right
+      targetPosition: left
+      type: custom
+      width: 244
+
+    # ────────────────────────────────────────────────────────────────────
+    # LLM Vision Extract — GPT-5-mini với strict JSON schema
+    # ────────────────────────────────────────────────────────────────────
+    - data:
+        desc: |
+          Extract toàn bộ PDF (text + tables) thành JSON theo schema.
+          - Model: gpt-5-mini, vision detail=high, reasoning_effort=medium.
+          - Strict JSON schema đảm bảo output luôn match.
+          - Giữ nguyên ký hiệu (○ △ ◎ ☆), Japanese verbatim.
+          - Forward-fill rowspan, flatten nested headers.
+        selected: false
+        title: LLM Vision Extract (GPT-5-mini)
+        type: llm
+        model:
+          provider: langgenius/openai/openai
+          name: gpt-5-mini
+          mode: chat
+          completion_params:
+            temperature: 0
+            max_tokens: 16000
+            reasoning_effort: medium
+            response_format:
+              type: json_schema
+              json_schema:
+                name: pdf_extraction
+                strict: true
+                schema:
+                  type: object
+                  additionalProperties: false
+                  required:
+                  - document
+                  - narrative_blocks
+                  - tables
+                  - extraction_notes
+                  properties:
+                    document:
+                      type: object
+                      additionalProperties: false
+                      required: [title, form_id, language, page_count]
+                      properties:
+                        title: {type: string}
+                        form_id: {type: string}
+                        language:
+                          type: string
+                          enum: [ja, vi, en, mixed]
+                        page_count: {type: integer}
+                    narrative_blocks:
+                      type: array
+                      items:
+                        type: object
+                        additionalProperties: false
+                        required: [block_id, page, type, text]
+                        properties:
+                          block_id: {type: string}
+                          page: {type: integer}
+                          type:
+                            type: string
+                            enum: [title, paragraph, bullet, field_label, note]
+                          text: {type: string}
+                    tables:
+                      type: array
+                      items:
+                        type: object
+                        additionalProperties: false
+                        required:
+                        - table_id
+                        - name
+                        - page_range
+                        - n_cols
+                        - n_rows
+                        - headers
+                        - legend
+                        - rows
+                        properties:
+                          table_id: {type: string}
+                          name: {type: string}
+                          page_range: {type: string}
+                          n_cols: {type: integer}
+                          n_rows: {type: integer}
+                          headers:
+                            type: array
+                            items: {type: string}
+                          legend:
+                            type: object
+                            additionalProperties: {type: string}
+                          rows:
+                            type: array
+                            items:
+                              type: object
+                              additionalProperties: false
+                              required: [row_index, cells]
+                              properties:
+                                row_index: {type: integer}
+                                cells:
+                                  type: object
+                                  additionalProperties: {type: string}
+                    extraction_notes: {type: string}
+        prompt_template:
+        - role: system
+          text: |
+            You are a precision PDF extraction engine specialized in Japanese administrative forms with complex tables.
+
+            # CORE RULES (non-negotiable)
+            1. Extract EVERY visible character. No summarization, no paraphrasing.
+            2. Preserve Japanese, symbols (○ △ ◎ ☆ ※ * ◯ ✓), and whitespace verbatim.
+            3. For tables with rowspan: emit one JSON row per visual row, forward-fill the spanned cell value (the same value repeats in each split row).
+            4. For nested column headers: flatten as `parent_child`. Example: parent "八戸市確認欄" with children "不足"/"不備" → headers "八戸市確認欄_不足" and "八戸市確認欄_不備".
+            5. Empty cells → "" (empty string), never null, never omit.
+            6. Continuation headers across page breaks: include only once at the first occurrence.
+            7. Sub-rows (e.g. "3-2", or row 18 split into 国税/その3の3 and 国税/その3の2): emit as separate rows with the SAME `No.` cell value but different other cells.
+            8. Output STRICT JSON matching the provided schema. No prose, no markdown fences.
+
+            # REASONING APPROACH
+            - First pass: identify document title, form ID, narrative blocks vs tables.
+            - Second pass: extract tables row-by-row, paying attention to rowspan/colspan.
+            - Third pass: verify total row count matches the PDF visual count.
+            - If any cell is OCR-uncertain, list it under `extraction_notes` with table_id, row_index, column.
+
+            # BLOCK TYPE CLASSIFICATION (for narrative_blocks)
+            - "title": main document title
+            - "field_label": form field label like "申請者(名称又は商号)"
+            - "bullet": instruction line starting with ○ / ・ / -
+            - "paragraph": normal prose
+            - "note": footnote / disclaimer / parenthetical remark
+
+            # OUTPUT FORMAT
+            Return ONLY the JSON object. No ```json fences. No explanation.
+        - role: user
+          text: |
+            Extract toàn bộ nội dung PDF dưới đây thành JSON theo schema.
+
+            File: {{#start_1.pdf_file.name#}}
+
+            Raw text reference (có thể có lỗi OCR, dùng để cross-check):
+            ---
+            {{#de_pdf.text#}}
+            ---
+
+            Trả về JSON object thuần, không bọc markdown.
+        vision:
+          enabled: true
+          configs:
+            detail: high
+            variable_selector:
+            - 'start_1'
+            - pdf_file
+        memory:
+          enabled: false
+          window:
+            enabled: false
+            size: 50
+        context:
+          enabled: false
+          variable_selector: []
+        structured_output:
+          enabled: false
+        retry_config:
+          enabled: true
+          max_retries: 2
+          retry_interval: 2000
+          exponential_backoff:
+            enabled: true
+            multiplier: 2
+            max_interval: 30000
+      height: 130
+      id: 'llm_extract'
+      position:
+        x: 700
+        y: 250
+      positionAbsolute:
+        x: 700
+        y: 250
+      selected: false
+      sourcePosition: right
+      targetPosition: left
+      type: custom
+      width: 244
+
+    # ────────────────────────────────────────────────────────────────────
+    # Code — post-process: generate row_text + nl_summary cho KB
+    # ────────────────────────────────────────────────────────────────────
+    - data:
+        code: |
+          import json
+
+
+          def main(extraction_raw: str, source_filename: str) -> dict:
+              """
+              Post-process LLM extraction output:
+                - validate JSON
+                - generate row_text per table row (for KB embedding)
+                - generate nl_summary per row (natural-language for retrieval)
+                - generate markdown export ready for Dify KB upload
+              """
+              try:
+                  data = json.loads(extraction_raw)
+              except json.JSONDecodeError as e:
+                  return {
+                      "result_json": "",
+                      "markdown_export": "",
+                      "row_count": 0,
+                      "table_count": 0,
+                      "error": f"JSON parse error: {e}",
+                  }
+
+              if not isinstance(data, dict):
+                  return {
+                      "result_json": "",
+                      "markdown_export": "",
+                      "row_count": 0,
+                      "table_count": 0,
+                      "error": "extraction is not a JSON object",
+                  }
+
+              doc = data.get("document", {})
+              doc.setdefault("source_filename", source_filename)
+              data["document"] = doc
+
+              total_rows = 0
+              tables = data.get("tables", [])
+              for t in tables:
+                  headers = t.get("headers", [])
+                  table_name = t.get("name", "Table")
+                  rows = t.get("rows", [])
+                  for r in rows:
+                      cells = r.get("cells", {}) or {}
+                      # row_text — compact key-value string
+                      parts = []
+                      for h in headers:
+                          v = cells.get(h, "")
+                          if v is None:
+                              v = ""
+                          v_str = str(v).strip()
+                          if v_str:
+                              parts.append(f"{h}: {v_str}")
+                      r["row_text"] = f"[{table_name}] " + " | ".join(parts)
+
+                      # nl_summary — template-based natural-language sentence
+                      subject = ""
+                      subject_header = ""
+                      attrs = []
+                      for h in headers:
+                          v = str(cells.get(h, "") or "").strip()
+                          if not v:
+                              continue
+                          if not subject:
+                              subject = v
+                              subject_header = h
+                          else:
+                              attrs.append(f"{h}={v}")
+                      if subject:
+                          attr_str = "; ".join(attrs) if attrs else ""
+                          if attr_str:
+                              r["nl_summary"] = (
+                                  f"Trong bảng '{table_name}', mục {subject_header}='{subject}'. "
+                                  f"Thuộc tính: {attr_str}."
+                              )
+                          else:
+                              r["nl_summary"] = (
+                                  f"Trong bảng '{table_name}', có mục {subject_header}='{subject}'."
+                              )
+                      else:
+                          r["nl_summary"] = ""
+
+                      total_rows += 1
+
+              # Generate Markdown export for direct KB upload
+              md_lines = []
+              title = doc.get("title", "Untitled")
+              form_id = doc.get("form_id", "")
+              header_line = f"# {title}"
+              if form_id:
+                  header_line += f" ({form_id})"
+              md_lines.append(header_line)
+              md_lines.append("")
+              md_lines.append(
+                  f"**Source**: {source_filename} | **Language**: "
+                  f"{doc.get('language','')} | **Pages**: {doc.get('page_count','')}"
+              )
+              md_lines.append("")
+
+              # Narrative blocks
+              narratives = data.get("narrative_blocks", [])
+              if narratives:
+                  md_lines.append("## Narrative content")
+                  md_lines.append("")
+                  for nb in narratives:
+                      ntype = nb.get("type", "paragraph")
+                      text = nb.get("text", "").strip()
+                      if not text:
+                          continue
+                      if ntype == "title":
+                          md_lines.append(f"**{text}**")
+                      elif ntype == "field_label":
+                          md_lines.append(f"- *Field*: {text}")
+                      elif ntype == "bullet":
+                          md_lines.append(f"- {text}")
+                      elif ntype == "note":
+                          md_lines.append(f"> {text}")
+                      else:
+                          md_lines.append(text)
+                      md_lines.append("")
+
+              # Tables
+              for t in tables:
+                  headers = t.get("headers", [])
+                  rows = t.get("rows", [])
+                  md_lines.append(f"## {t.get('name', 'Table')}")
+                  md_lines.append("")
+                  md_lines.append(
+                      f"*Table {t.get('table_id','')} — "
+                      f"{t.get('n_rows','?')} rows × "
+                      f"{t.get('n_cols','?')} cols | "
+                      f"pages {t.get('page_range','?')}*"
+                  )
+                  md_lines.append("")
+                  legend = t.get("legend", {})
+                  if legend:
+                      md_lines.append("**Legend**: " + "; ".join(
+                          f"`{k}` = {v}" for k, v in legend.items()
+                      ))
+                      md_lines.append("")
+                  if headers:
+                      md_lines.append("| " + " | ".join(headers) + " |")
+                      md_lines.append("|" + "|".join(["---"] * len(headers)) + "|")
+                      for r in rows:
+                          cells = r.get("cells", {}) or {}
+                          row_vals = []
+                          for h in headers:
+                              v = str(cells.get(h, "") or "").replace("\n", " ").replace("|", "\\|")
+                              row_vals.append(v)
+                          md_lines.append("| " + " | ".join(row_vals) + " |")
+                      md_lines.append("")
+                  md_lines.append("**Chi tiết từng dòng (for RAG)**:")
+                  md_lines.append("")
+                  for r in rows:
+                      summary = r.get("nl_summary", "")
+                      if summary:
+                          md_lines.append(f"- {summary}")
+                  md_lines.append("")
+
+              markdown_export = "\n".join(md_lines)
+
+              return {
+                  "result_json": json.dumps(data, ensure_ascii=False, indent=2),
+                  "markdown_export": markdown_export,
+                  "row_count": total_rows,
+                  "table_count": len(tables),
+                  "error": "",
+              }
+        code_language: python3
+        desc: |
+          Post-process LLM output:
+          - Parse + validate JSON
+          - Generate row_text + nl_summary per row (cho KB embedding)
+          - Generate Markdown export sẵn sàng upload vào Dify Dataset
+        outputs:
+          result_json:
+            children: null
+            type: string
+          markdown_export:
+            children: null
+            type: string
+          row_count:
+            children: null
+            type: number
+          table_count:
+            children: null
+            type: number
+          error:
+            children: null
+            type: string
+        selected: false
+        title: Code — post-process (row_text + markdown)
+        type: code
+        variables:
+        - value_selector:
+          - 'llm_extract'
+          - text
+          variable: extraction_raw
+        - value_selector:
+          - 'start_1'
+          - pdf_file
+          variable: source_filename
+      height: 130
+      id: 'code_postprocess'
+      position:
+        x: 1020
+        y: 250
+      positionAbsolute:
+        x: 1020
+        y: 250
+      selected: false
+      sourcePosition: right
+      targetPosition: left
+      type: custom
+      width: 244
+
+    # ────────────────────────────────────────────────────────────────────
+    # End — output JSON + Markdown
+    # ────────────────────────────────────────────────────────────────────
+    - data:
+        desc: |
+          Outputs:
+          - result_json: full structured JSON (document + narrative + tables với row_text + nl_summary)
+          - markdown_export: Markdown sẵn sàng upload vào Dify KB (Parent-Child mode, parent delimiter = "\n## ")
+          - row_count / table_count: counters
+          - error: parse/validation error nếu có
+        outputs:
+        - value_selector:
+          - 'code_postprocess'
+          - result_json
+          value_type: string
+          variable: result_json
+        - value_selector:
+          - 'code_postprocess'
+          - markdown_export
+          value_type: string
+          variable: markdown_export
+        - value_selector:
+          - 'code_postprocess'
+          - row_count
+          value_type: number
+          variable: row_count
+        - value_selector:
+          - 'code_postprocess'
+          - table_count
+          value_type: number
+          variable: table_count
+        - value_selector:
+          - 'code_postprocess'
+          - error
+          value_type: string
+          variable: error
+        selected: false
+        title: End
+        type: end
+      height: 180
+      id: 'end_1'
+      position:
+        x: 1340
+        y: 250
+      positionAbsolute:
+        x: 1340
+        y: 250
+      selected: false
+      sourcePosition: right
+      targetPosition: left
+      type: custom
+      width: 244
+
+    viewport:
+      x: 0
+      y: 0
+      zoom: 0.75
