@@ -180,82 +180,6 @@ workflow:
             temperature: 0
             max_tokens: 16000
             reasoning_effort: medium
-            response_format:
-              type: json_schema
-              json_schema:
-                name: pdf_extraction
-                strict: true
-                schema:
-                  type: object
-                  additionalProperties: false
-                  required:
-                  - document
-                  - narrative_blocks
-                  - tables
-                  - extraction_notes
-                  properties:
-                    document:
-                      type: object
-                      additionalProperties: false
-                      required: [title, form_id, language, page_count]
-                      properties:
-                        title: {type: string}
-                        form_id: {type: string}
-                        language:
-                          type: string
-                          enum: [ja, vi, en, mixed]
-                        page_count: {type: integer}
-                    narrative_blocks:
-                      type: array
-                      items:
-                        type: object
-                        additionalProperties: false
-                        required: [block_id, page, type, text]
-                        properties:
-                          block_id: {type: string}
-                          page: {type: integer}
-                          type:
-                            type: string
-                            enum: [title, paragraph, bullet, field_label, note]
-                          text: {type: string}
-                    tables:
-                      type: array
-                      items:
-                        type: object
-                        additionalProperties: false
-                        required:
-                        - table_id
-                        - name
-                        - page_range
-                        - n_cols
-                        - n_rows
-                        - headers
-                        - legend
-                        - rows
-                        properties:
-                          table_id: {type: string}
-                          name: {type: string}
-                          page_range: {type: string}
-                          n_cols: {type: integer}
-                          n_rows: {type: integer}
-                          headers:
-                            type: array
-                            items: {type: string}
-                          legend:
-                            type: object
-                            additionalProperties: {type: string}
-                          rows:
-                            type: array
-                            items:
-                              type: object
-                              additionalProperties: false
-                              required: [row_index, cells]
-                              properties:
-                                row_index: {type: integer}
-                                cells:
-                                  type: object
-                                  additionalProperties: {type: string}
-                    extraction_notes: {type: string}
         prompt_template:
         - role: system
           text: |
@@ -313,8 +237,75 @@ workflow:
         context:
           enabled: false
           variable_selector: []
+        structured_output_enabled: true
         structured_output:
-          enabled: false
+          enabled: true
+          schema:
+            type: object
+            required:
+            - document
+            - narrative_blocks
+            - tables
+            - extraction_notes
+            properties:
+              document:
+                type: object
+                required: [title, form_id, language, page_count]
+                properties:
+                  title: {type: string}
+                  form_id: {type: string}
+                  language:
+                    type: string
+                    enum: [ja, vi, en, mixed]
+                  page_count: {type: integer}
+              narrative_blocks:
+                type: array
+                items:
+                  type: object
+                  required: [block_id, page, type, text]
+                  properties:
+                    block_id: {type: string}
+                    page: {type: integer}
+                    type:
+                      type: string
+                      enum: [title, paragraph, bullet, field_label, note]
+                    text: {type: string}
+              tables:
+                type: array
+                items:
+                  type: object
+                  required:
+                  - table_id
+                  - name
+                  - page_range
+                  - n_cols
+                  - n_rows
+                  - headers
+                  - legend
+                  - rows
+                  properties:
+                    table_id: {type: string}
+                    name: {type: string}
+                    page_range: {type: string}
+                    n_cols: {type: integer}
+                    n_rows: {type: integer}
+                    headers:
+                      type: array
+                      items: {type: string}
+                    legend:
+                      type: object
+                      additionalProperties: {type: string}
+                    rows:
+                      type: array
+                      items:
+                        type: object
+                        required: [row_index, cells]
+                        properties:
+                          row_index: {type: integer}
+                          cells:
+                            type: object
+                            additionalProperties: {type: string}
+              extraction_notes: {type: string}
         retry_config:
           enabled: true
           max_retries: 2
@@ -345,32 +336,36 @@ workflow:
           import json
 
 
-          def main(extraction_raw: str, source_filename: str) -> dict:
+          def main(extraction_data, source_filename: str) -> dict:
               """
-              Post-process LLM extraction output:
-                - validate JSON
+              Post-process LLM structured_output:
+                - validate object
                 - generate row_text per table row (for KB embedding)
                 - generate nl_summary per row (natural-language for retrieval)
                 - generate markdown export ready for Dify KB upload
               """
-              try:
-                  data = json.loads(extraction_raw)
-              except json.JSONDecodeError as e:
+              # extraction_data is already a parsed dict from LLM structured_output.
+              # Defensive: if upstream passes a JSON string, parse it.
+              if isinstance(extraction_data, str):
+                  try:
+                      data = json.loads(extraction_data)
+                  except json.JSONDecodeError as e:
+                      return {
+                          "result_json": "",
+                          "markdown_export": "",
+                          "row_count": 0,
+                          "table_count": 0,
+                          "error": f"JSON parse error: {e}",
+                      }
+              elif isinstance(extraction_data, dict):
+                  data = extraction_data
+              else:
                   return {
                       "result_json": "",
                       "markdown_export": "",
                       "row_count": 0,
                       "table_count": 0,
-                      "error": f"JSON parse error: {e}",
-                  }
-
-              if not isinstance(data, dict):
-                  return {
-                      "result_json": "",
-                      "markdown_export": "",
-                      "row_count": 0,
-                      "table_count": 0,
-                      "error": "extraction is not a JSON object",
+                      "error": f"unexpected extraction type: {type(extraction_data).__name__}",
                   }
 
               doc = data.get("document", {})
@@ -537,8 +532,8 @@ workflow:
         variables:
         - value_selector:
           - 'llm_extract'
-          - text
-          variable: extraction_raw
+          - structured_output
+          variable: extraction_data
         - value_selector:
           - 'start_1'
           - pdf_file
